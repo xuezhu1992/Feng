@@ -1,0 +1,615 @@
+---
+title: "final"
+author: "Yanting Guo"
+date: "3/19/2019"
+output:html_notebook
+
+---
+
+```{r}
+cd_data <- read.csv("/Users/fengxuezhu/Desktop/UCI_Credit_Card.csv",nrows = 5000)
+head(cd_data)
+```
+
+```{r}
+str(cd_data)
+```
+# Prepare data
+## Dealing with missing values
+Check how many NAs in each feature. 
+Firstly write a function to check for one column
+
+```{r}
+count_na <- function(x){length(which(is.na(x)))}
+length(which(is.na(cd_data$LIMIT_BAL)))
+```
+Applying the function to all columns
+```{r}
+
+MissingCount <- c()
+for(column in colnames(cd_data)){
+  MissingCount <- c(MissingCount, count_na(cd_data[, column]))
+}
+MissingCount_df <- data.frame("Name" = colnames(cd_data), "MissingCount" = MissingCount)
+MissingCount_df$MissingPercent <- round(MissingCount_df$MissingCount / nrow(cd_data), 2)
+MissingCount_df[order(MissingCount_df$MissingPercent, decreasing = T), ]
+MissingCount_df
+```
+
+there are no missing values in our dataset.
+## coerce the feaures into right data type
+
+```{r}
+colnames(cd_data)
+```
+
+
+```{r}
+change_col <- c( "SEX",
+                 "EDUCATION",
+                 "MARRIAGE",
+                 "PAY_0",
+                 "PAY_2",
+                 "PAY_3",
+                 "PAY_4",
+                 "PAY_5",
+                 "PAY_6",
+                 "default.payment.next.month"
+)
+cd_data[,change_col] <- apply(cd_data[,change_col], 2, function(x) as.character(x))
+cd_data[,change_col] <- apply(cd_data[,change_col], 2, function(x) as.factor(x))
+str(cd_data)
+```
+
+```{r}
+col_change <- c("BILL_AMT1",
+                "BILL_AMT2",
+                "BILL_AMT4",
+                "BILL_AMT5",
+                "PAY_AMT6"
+                )
+cd_data[,col_change] <- apply(cd_data[,col_change], 2, function(x) as.numeric(x))
+str(cd_data)
+```
+## check undocumented values
+```{r}
+unique(cd_data$PAY_0)
+```
+By initial observation, there are many undocumented values for repayment status variables: -2 and 0. Strictly speaking, it is “NAs”. let's check how many of them and consider how to deal with them.
+
+```{r}
+sum(cd_data$PAY_0 == "-2")
+sum(cd_data$PAY_0 == "0")
+sum(sum(cd_data$PAY_0 == "-2"),sum(cd_data$PAY_0 == "0"))/nrow(cd_data)
+```
+Just for Repayment status in September, 2005, there are 55% values are -2 and 0, so it's a great loss of we delete these obeservations, the best decision is keep them as it is.
+Check how about other variables, whether they have undocumented values.
+```{r}
+unique(cd_data$SEX)
+unique(cd_data$EDUCATION)
+unique(cd_data$MARRIAGE)
+```
+As we can see, varibales EDUCATION and MARRIAGE also contains undocumented value: 0, 
+```{r}
+sum(cd_data$EDUCATION == "0")
+sum(cd_data$MARRIAGE == "0")
+```
+Only 1 observations for variable education has value 0 and 9 for marriage. I suggest delete them.
+```{r}
+new_data <- cd_data[which(cd_data$MARRIAGE != "0" & cd_data$EDUCATION != "0"),]
+dim(new_data)
+str(new_data)
+unique(new_data$MARRIAGE)
+unique(new_data$EDUCATION)
+```
+## split dataset into train set and test set
+```{r}
+train_index <- sample(rownames(new_data), round(0.8*nrow(new_data),0))
+test_index <- rownames(new_data)[!(rownames(new_data) %in% train_index)]
+new_train <- new_data[train_index,]
+new_test <- new_data[test_index,]
+```
+## check dependent data distribution
+check table of data points for default.payment.next.month, how imbalanced is it?
+```{r}
+default <- table(new_data$default.payment.next.month)
+default
+```
+check classes distribution
+```{r}
+prop.table(default)
+```
+
+```{r}
+library(ggplot2)
+ggplot(data = new_data, aes(x = default.payment.next.month,fill= default.payment.next.month,color=default.payment.next.month)) +
+  geom_bar()+
+ scale_fill_brewer(palette="Blues")
+
+```
+
+people defaulted on about 22.18% of credit card, so there’s some imbalance in the data.
+How badly can this imbalanced data set affect our prediction accuracy? let's build a model on this data, I'll be using decision tree algorithm for modeling purpose
+
+```{r}
+library(rpart)
+tree <- rpart(default.payment.next.month ~ ., data = new_train)
+pred.tree <- predict(tree, newdata = new_test)
+head(pred.tree)
+```
+
+```{r}
+library(ROSE)
+accuracy.meas(new_test$default.payment.next.month,pred.tree[,2])
+```
+These metrics provide an interesting interpretation. With threshold value as 0.5, Precision = 0.66 says there are 33% false positives. Recall = 0.285 is very much low and indicates that we have higher number of false negatives. Threshold values can be altered also. F = 0.199 is also low and suggests weak accuracy of this model.
+We’ll check the final accuracy of this model using ROC curve. This will give us a clear picture, if this model is worth. Using the function roc.curve available in this package:
+```{r}
+roc.curve(new_test$default.payment.next.month, pred.tree[,2], plotit = F)
+```
+AUC = 0.621 is a terribly low score. Therefore, it is necessary to balanced data before applying a machine learning algorithm. In this case, the algorithm gets biased toward the majority class and fails to map minority class.
+
+```{r}
+table(new_train$default.payment.next.month)
+prop.table(table(new_train$default.payment.next.month))
+```
+In this case, originally we had 3100 negative observations. So, I instructed this line of code to over sample minority class until it reaches 3100 and the total data set comprises of 6200 samples.
+# oversampling
+```{r}
+
+data_balanced_over <- ovun.sample(default.payment.next.month ~ ., data = new_train, method = "over", N = 6200)$data
+table(data_balanced_over$default.payment.next.month)
+```
+
+```{r}
+tree.over <- rpart(default.payment.next.month ~ ., data = data_balanced_over)
+pred.tree.over <- predict(tree.over, newdata = new_test)
+roc.curve(new_test$default.payment.next.month,pred.tree.over[,2],plotit = F)
+```
+
+```{r}
+input1 <- c("LIMIT_BAL",
+            "SEX",
+            "EDUCATION",
+            "MARRIAGE",
+            "AGE",
+            "PAY_0",
+            "PAY_2",
+            "PAY_3",
+            "PAY_4",
+            "PAY_5",
+            "PAY_6",
+            "BILL_AMT1",
+            "BILL_AMT2",
+            "BILL_AMT3",
+            "BILL_AMT4",
+            "BILL_AMT5",
+            "BILL_AMT6",
+            "PAY_AMT1",
+            "PAY_AMT2",
+            "PAY_AMT3",
+            "PAY_AMT4",
+            "PAY_AMT5",
+            "PAY_AMT6"
+      )
+input2 <- c("LIMIT_BAL",
+            "BILL_AMT1",
+            "BILL_AMT2",
+            "BILL_AMT3",
+            "BILL_AMT4",
+            "BILL_AMT5",
+            "BILL_AMT6",
+            "PAY_AMT1",
+            "PAY_AMT2",
+            "PAY_AMT3",
+            "PAY_AMT4",
+            "PAY_AMT5",
+            "PAY_AMT6"
+      )
+input3 <- c("SEX",
+            "EDUCATION",
+            "MARRIAGE",
+            "AGE",
+            "PAY_0",
+            "PAY_2",
+            "PAY_3",
+            "PAY_4",
+            "PAY_5",
+            "PAY_6"
+      )
+
+```
+
+# Build models
+## linear model with all variables
+```{r}
+mod1 <- glm(as.factor(default.payment.next.month) ~ ., data = data_balanced_over[,c("default.payment.next.month", input1)],family=binomial)
+summary(mod1)
+```
+see how this model performs
+
+```{r}
+pred1 <- predict(mod1,newdata=new_test)
+perf1 <- data.frame("PredictedProb" = pred1, "Output" = new_test$default.payment.next.month)
+conf1 <- table(ifelse(perf1$PredictedProb >= 0.5, "Y", "N"), perf1$Output)
+conf1
+```
+
+```{r}
+#false positive
+conf1[2,1]/sum(conf1[1,1],conf1[2,1])
+#false negative
+conf1[1,2]/sum(conf1[1,2],conf1[2,2])
+# misclassification
+sum(conf1[1,2],conf1[2,1])/nrow(new_test)
+```
+Accuracy for linear model is 60.28%, but with a high percentage of false negative that incorrectly view those will default as those will not.
+# Using numeric variables as input to see how that model performs
+```{r}
+mod2 <- lm(as.numeric(default.payment.next.month) ~ ., data = data_balanced_over[,c("default.payment.next.month", input2)])
+summary(mod2)
+```
+```{r}
+res1 <- mod2$residuals
+rmse1 <- sqrt(mean(res1^2))
+rmse1
+```
+According to above result, although the rmse is 48%, the adjuste r^2 is only 4%, which means our data doesn't fit this regression line, and the model only could explain 4% of the variability of the response data around its mean.
+
+# Using categrial variable inputs to build a classification regression model, then see how it performs
+```{r}
+mod3 <- glm(as.factor(default.payment.next.month) ~ .,data = data_balanced_over[,c("default.payment.next.month", input3)], family = binomial)
+summary(mod3)
+```
+
+```{r}
+pred2 <- predict(mod3,newdata=new_test)
+perf2 <- data.frame("PredictedProb" = pred2, "Output" = new_test$default.payment.next.month)
+conf2 <- table(ifelse(perf2$PredictedProb >= 0.5, "Y", "N"), perf2$Output)
+conf2
+```
+```{r}
+# false positive
+conf2[2,1]/sum(conf2[1,1],conf2[2,1])
+#false negative 
+conf2[1,2]/sum(conf2[1,2],conf2[2,2]) ## big problem, this model has a high possiblility to assign those who will default as not.
+# misclassification rate
+sum(conf2[2,1],conf2[1,2])/nrow(new_test)
+```
+This result is similar to model1, high false nagative percentage.
+
+# multicollinearity
+```{r}
+library(corrplot)
+correlations <- cor(data_balanced_over[, input2])
+corrplot(correlations, method = "number", type = 'upper')
+```
+
+```{r}
+
+```
+
+
+Above figure shows amount of bill statement from April to August have strong collinearity.
+
+# stepwise regression
+```{r}
+library(MASS)
+mod_max <- glm(as.factor(default.payment.next.month)~., data = data_balanced_over[, c("default.payment.next.month", input1)],family = binomial)
+mod_step <- stepAIC(mod_max, direction="backward")
+mod_step$anova
+
+```
+
+```{r}
+input4 <- c("LIMIT_BAL",
+            "SEX",
+            "EDUCATION",
+            "MARRIAGE",
+            "PAY_0",
+            "PAY_2",
+            "PAY_3",
+            "PAY_5",
+            "PAY_6",
+            "BILL_AMT1",
+            "BILL_AMT2",
+            "BILL_AMT3",
+            "BILL_AMT5",
+            "PAY_AMT1",
+            "PAY_AMT2",
+            "PAY_AMT3")
+mod_glm_final <- glm(as.factor(default.payment.next.month) ~ .,data = data_balanced_over[,c("default.payment.next.month", input4)], family = binomial)
+summary(mod_glm_final)
+pred3 <- predict(mod_glm_final, newdata = new_test )
+perf3 <- data.frame("PredictedProb" = pred3, "Output" = new_test$default.payment.next.month)
+conf3 <- table(ifelse(perf3$PredictedProb >= 0.5, "Y", "N"), perf3$Output)
+conf3
+```
+
+```{r}
+#false positive
+conf3[2,1]/sum(conf3[1,1],conf3[2,1])
+# false negative
+conf3[1,2]/sum(conf3[1,2],conf3[2,2])
+# misclassification
+sum(conf3[1,2],conf3[2,1])/nrow(new_test)
+```
+
+
+```{r}
+input5 <- c("LIMIT_BAL",
+            "SEX",
+            "EDUCATION",
+            "MARRIAGE",
+            "PAY_0",
+            "BILL_AMT1",
+            "PAY_AMT1",
+            "PAY_AMT2",
+            "PAY_AMT3")
+mod_glm_final1 <- glm(as.factor(default.payment.next.month) ~ .,data = data_balanced_over[,c("default.payment.next.month", input5)], family = binomial)
+summary(mod_glm_final1)
+pred4 <- predict(mod_glm_final1, newdata = new_test)
+perf4 <- data.frame("PredictedProb" = pred4, "Output" = new_test$default.payment.next.month)
+conf4 <- table(ifelse(perf4$PredictedProb >= 0.5, "Y", "N"), perf4$Output)
+conf4
+```
+
+```{r}
+#false positive
+fpr_glm<-conf4[2,1]/sum(conf4[1,1],conf4[2,1])
+fpr_glm
+# false negative
+fnr_glm<-conf4[1,2]/sum(conf4[1,2],conf4[2,2])
+fnr_glm
+# misclassification
+mr_glm<-sum(conf4[1,2],conf4[2,1])/nrow(new_test)
+mr_glm
+```
+
+
+```{r}
+library("car")
+vif(mod_glm_final1)
+```
+#####lasso feature selection.
+```{r}
+library(glmnet)
+train_x <- model.matrix(as.factor(default.payment.next.month) ~ ., data_balanced_over[, c("default.payment.next.month", input1)])[, -1]
+train_y <- data_balanced_over$default.payment.next.month
+mod_max <- glmnet(
+  x = train_x,
+  y = train_y,
+  alpha = 1
+)
+str(mod_max$lambda)
+```
+```{r}
+###########Use cross validation to select lambda############
+train_index1 <- sample(rownames(data_balanced_over), round(3*nrow(data_balanced_over)/5,0))
+test_validation_index <- rownames(data_balanced_over)[!(rownames(data_balanced_over) %in% train_index)]
+validation_index1 <- sample(test_validation_index, round(1*length(test_validation_index)/2,0))
+test_index1 <- test_validation_index[!(test_validation_index %in% validation_index1)]
+
+train_x1 <- model.matrix(as.factor(default.payment.next.month) ~ .,data_balanced_over[train_index, c("default.payment.next.month", input1)])[, -1]
+train_y1 <- data_balanced_over[train_index,"default.payment.next.month"]
+
+mod_lm_cv <- glmnet(
+  x = train_x1,
+  y = train_y1,
+  alpha = 1
+)
+str(mod_lm_cv$lambda)
+```
+
+```{r}
+cv.lasso <- cv.glmnet(train_x1, as.numeric(train_y1), alpha = 1)
+plot(cv.lasso)
+```
+```{r}
+cv.lasso$lambda.min
+```
+
+```{r}
+lasso.model <- glmnet(train_x, train_y, alpha = 1,lambda = cv.lasso$lambda.min)
+lasso.model$beta
+```
+According to the lasso result, all variables kept.
+
+classification regression and linear regression are not suitable in this case, since many variables are collinear, like pay_0 to pay_6 and Bill_AMT1 to Bill_AMT6, no matter use which kind of method, lasso or stepwise, model that using the remaining features still has poor performance, which has a big problem in warning who pay the bill on time as the one who defaults. if banks use this model in real, they will waste a lot of money and labors on contacting for collection. under this circumenstance, they will lose thousands of customers.
+
+########################################################
+#### Naive Bayes
+```{r}
+library(e1071)
+nb <- naiveBayes(as.factor(default.payment.next.month) ~ ., data = data_balanced_over[, c("default.payment.next.month", input1)])
+nb
+nb_confusion <- table(predict(nb,new_test[, c(input1)]), new_test[, c("default.payment.next.month")])
+nb_confusion
+#false positive
+nb_confusion[2,1]/sum(nb_confusion[1,1], nb_confusion[2,1])
+#false negative
+nb_confusion[1,2]/sum(nb_confusion[1,2], nb_confusion[2,2])
+#misclassification error rate
+sum(nb_confusion[2,1],nb_confusion[1,2])/nrow(new_test)
+```
+
+## k-fold validation
+
+```{r}
+folds <- cut(seq(1,nrow(data_balanced_over)),breaks=10,labels=FALSE)
+predtest <- c()
+for (i in 1:10) {
+    testIndexes <- which(folds==i)
+    testData <- data_balanced_over[testIndexes, ]
+    trainData <- data_balanced_over[-testIndexes, ]
+    nb_train <- naiveBayes(as.factor(default.payment.next.month) ~ ., data = trainData[, c("default.payment.next.month", input1)])
+    pred_test <- predict(nb_train,newdata = testData[,c("default.payment.next.month",input1)])
+    predtest <- c(predtest, pred_test)
+}
+```
+
+
+```{r}
+predtest_df <- data.frame("Predict"= predtest-1,"Output[i]" = data_balanced_over$default.payment.next.month)
+conf_nb <- table(ifelse(predtest_df$Predict == 1, "Y", "N"), predtest_df$Output)
+conf_nb
+#false positive rate
+fpr_nb<-conf_nb[2,1]/sum(conf_nb[1,1], conf_nb[2,1])
+fpr_nb
+#false negative rate
+fnr_nb<-conf_nb[1,2]/sum(conf_nb[1,2], conf_nb[2,2])
+fnr_nb
+#misclassification rate
+mr_nb<-sum(conf_nb[1,2],conf_nb[2,1])/sum(conf_nb[2,1], conf_nb[1,2], conf_nb[1,1], conf_nb[2,2])
+mr_nb
+```
+```{r}
+library(bnlearn)
+str(data_balanced_over)
+BILL_mean<-rowMeans(data_balanced_over[,13:18])
+data_balanced_over<-cbind(data_balanced_over,BILL_mean)
+input6<-c("LIMIT_BAL",
+            "SEX",
+            "EDUCATION",
+            "MARRIAGE",
+            "AGE",
+            "PAY_0",
+            "PAY_2",
+            "PAY_3",
+            "PAY_4",
+            "PAY_5",
+            "PAY_6",
+            "BILL_mean",
+            "PAY_AMT1",
+            "PAY_AMT2",
+            "PAY_AMT3",
+            "PAY_AMT4",
+            "PAY_AMT5",
+            "PAY_AMT6"
+      )
+credit_data <- lapply(data_balanced_over[,c("default.payment.next.month", input6)], as.factor)
+cd_df <- data.frame(credit_data)
+tan <-  tree.bayes(cd_df, "default.payment.next.month")
+fitted <-  bn.fit(tan, cd_df, method = "bayes")
+plot(tan)
+```
+
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+#BiocManager::install("Rgraphviz", version = "3.8")Ye
+library(Rgraphviz)
+graphviz.plot(fitted,highlight = 
+                list(nodes=nodes(fitted), fill="lightblue", col="black"),shape="rectangle")
+```
+
+######## randomForest##############
+
+```{r}
+library(randomForest)
+library(ROCR)
+rf1 <-randomForest(as.factor(default.payment.next.month) ~.,data=data_balanced_over[, c(input1, "default.payment.next.month")], importance=TRUE)	
+imp_df <- data.frame(importance(rf1))
+imp_df[order(imp_df$MeanDecreaseAccuracy, decreasing = T),]
+imp_df[order(imp_df$MeanDecreaseGini, decreasing = T),]
+rf1
+```
+
+```{r}
+#extrac the attributes
+rf1_confusion <- rf1$confusion
+#false positive
+fpr_rf<-rf1_confusion[2,1]/sum(rf1_confusion[1,1], rf1_confusion[2,1])
+#false negative
+fnr_rf<-rf1_confusion[1,2]/sum(rf1_confusion[1,2], rf1_confusion[2,2])
+#error rate
+mr_rf<-sum(rf1_confusion[2,1], rf1_confusion[1,2])/sum(rf1_confusion)
+```
+
+
+```{r}
+# Variable Importance
+varImpPlot(rf1,  
+           sort = T,
+           n.var=23,
+           main="Importance of 23 Variables",
+           cex=0.5)
+
+#the mean decrease in Gini
+var.imp = data.frame(importance(rf1,  
+                                 type=2))
+# make row names as columns
+var.imp$Variables = row.names(var.imp)  
+print(var.imp[order(var.imp$MeanDecreaseGini,decreasing = T),])
+```
+```{r}
+balance_index <- data_balanced_over[,1]
+head(balance_index)
+```
+
+```{r}
+Comparison <- data.frame(c(fpr_glm,fnr_glm,mr_glm),c(fpr_nb,fnr_nb,mr_nb),c(fpr_rf,fnr_rf,mr_rf))
+names(Comparison) <-c("Glm","Naive Bayes","Random Forest")
+row.names(Comparison) <- c("False Positive","False Negative","Misclassification")
+Comparison
+```
+
+```{r}
+final_data <- rbind(data_balanced_over,new_test)
+str(final_data)
+dim(final_data)
+```
+
+Greedy search
+```{r}
+forloop <- function(CandidateMetrics, Whitelist, TrainDF, TestDF){
+		accuracy <- c()
+		for (cols in CandidateMetrics[!(CandidateMetrics %in% Whitelist)]){
+			input00 <- c(Whitelist, cols)
+			train00 <- TrainDF[, c("default.payment.next.month", input1)]
+			test00 <- TestDF[, c("default.payment.next.month", input1)]
+			rf = randomForest(default.payment.next.month~.,data=train00, importance=TRUE)	
+			pred = predict(rf, newdata = test00, type = "prob")[,2]
+			tab <- table(ifelse(pred > 0.5, 1, 0), test00[, "default.payment.next.month"])
+			tab <- rbind(tab, c(0,0))
+			accuracy <- c(accuracy, (tab[1,1]/sum(tab[,1]) + tab[2,2]/sum(tab[,2]))/2)
+			num_metric <- length(input00[!is.na(input00)])	
+		}
+		accuracy_df <- data.frame("Metric" = CandidateMetrics[!(CandidateMetrics %in% Whitelist)], "BA" = accuracy, "X" = num_metric)
+		
+		metric <- sample(as.character(accuracy_df[accuracy_df$BA == max(accuracy_df$BA), "Metric"]),1)
+		BA <- accuracy_df[accuracy_df$Metric == metric, c("BA", "X")]
+		logdata <- data.frame(metric, BA)
+		logdata
+}
+```
+
+```{r}
+library(dplyr)
+cd <- final_data %>% mutate_if(is.character, as.factor)
+
+#initiation
+logtable <- data.frame(metric = character(0), BA = numeric(0), n_metric = numeric(0))
+CandidateMetrics <- input1
+Whitelist <- c()
+TrainDF <- cd[sample(balance_index, round(length(balance_index),0)), ]
+TestDF <- cd[sample(test_index, round(length(test_index),0)), ]
+
+
+# use plot to see the loop progress
+plot(1, type="n", xlab="NumFeatures", ylab="Balanced Accuracy", xlim=c(1, length(input1)), ylim=c(0.5, 1))
+while(length(CandidateMetrics) >= 1){
+	output <- forloop(CandidateMetrics, Whitelist, TrainDF, TestDF)
+	CandidateMetrics <- CandidateMetrics[CandidateMetrics != as.character(output$metric)]
+	Whitelist <- c(Whitelist, as.character(output$metric))
+	logtable <- rbind(logtable, output)
+	points(output$X, output$BA)
+}
+rownames(logtable) <- 1:nrow(logtable)
+logtable
+plot(logtable$X,logtable$BA,type="b")
+
+```
+
+```
+
